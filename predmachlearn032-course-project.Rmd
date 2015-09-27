@@ -1,0 +1,198 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Deeptendu Bikash Dhar"
+date: "September 27, 2015"
+output: 
+  html_document: 
+    theme: united
+    toc: yes
+---
+
+```{r setoptions, echo=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning=FALSE)
+```
+
+## Introduction
+
+The objective of this excercise is to model the Weightlifting Exercise data available at http://groupware.les.inf.puc-rio.br/har to predict in which one out of the 5 different fashions the subjects in the test set were exercising. According to the site, six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Sensors were fit to their arm, forearm, dumbbell and belt and several parameters recorded. We are to develop a model based on the training data set with all measurements and output class, and have to predict the output class for the data in the test set. The complete exercise is described in 
+http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf.
+
+## Getting, Understanding and cleaning the data
+
+We download the training dataset from https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv and read it:
+
+```{r, echo=FALSE}
+setwd("E:\\Analytics\\Data Science Course JHU Coursera\\Course 8 - Practical Machine Learning\\course project")
+```
+```{r}
+data <- read.csv("pml-training.csv")
+```
+
+The data set has 19622 observations of 160 variables. There seem to be quite a few columns with "NA", "#DIV/0!" and spaces, so we re-read the data set considering these as NA and find out how many 'sane' columns we have got:
+```{r}
+data <- read.csv("pml-training.csv", na.strings=c("NA", "", " ", "#DIV/0!"))
+length(which(colSums(is.na(data))==0))
+
+```
+
+Let us try to understand our data a bit. From the paper:
+*"we used four 9 degrees of freedom Razor inertial measurement units (IMU), which provide three-axes acceleration, gyroscope and magnetometer data at a joint sampling rate of 45 Hz. We mounted the sensors in the users' glove, , lumbar belt and dumbbell."*
+
+Looking at the data, we see measurements from these sensors can be identified from the variable names:
+
+* glove: Variables with "_forearm". 38 variables (```length(grep("_forearm", names(data)))```
+* armband: Variabes with "_arm". 38 variables (```length(grep("_arm", names(data)))```
+* lumbar belt: Variabes with "_belt". 38 variables (```length(grep("_belt", names(data)))```
+* dumbbell: Variabes with "_dumbbell". 38 variables (```length(grep("_dumbbell", names(data)))```
+
+These give 38 x 4 = 152 variables. Additionally the first 7 variables are: X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window. These all should be irrelevant for our modeling. The last variable is *classe*, our outcome variable. All these add up to 160.
+
+How many variables should we include for our modelling? There seem to be a large number of missing values. Looking closer, we see the following variables to have missing values:
+
+* curtosis_roll|pitch|yaw
+* skewness_roll|pitch|yaw
+* max_roll|pitch|yaw
+* min_roll|pitch|yaw
+* amplitude_roll|pitch|yaw
+* avg_roll|pitch|yaw
+* stddev_roll|pitch|yaw
+* var_roll|pitch|yaw
+* var_total_accel
+
+This gives 25 variables per sensor, or a 100 total variables.
+
+The variables that have values are:
+
+* gyros_xxx_x|y|z
+* accel_xxx_x|y|z
+* total_accel_xxx
+* magnet_xxx_x|y|z
+* roll|pitch|yaw_xxx
+
+which imply roll, pitch, yaw and accelerometer, gyroscope, and magnetometer readings for each of the 4 sensor locations. This gives 13 variables per sensor, a total of 52 variables. These are the variables that seem sensible to include in a model. To extract these variables, it is sufficient to remove the missing values, the first 7 and the last columns from our data set.
+
+
+```{r}
+data <- data[,colSums(is.na(data))==0]
+data <- data[,c(-1:-7)]
+```
+
+We now have our data frame containing 52 predictor variables and one outcome variables and are ready to start modeling.
+
+
+## Modeling
+
+### Prediction Study Design
+
+We will divide the data into training and test sets. (Note that we refer to pml_training.csv only as the data; pml_testing cannot be used as it is for grading our models and also do not contain the outcome). Though we will use cross-validation to select the best parameters for the individual models, we will use the test set to select the best model. Let us use 70% of the data for training and the rest for testing.
+
+```{r}
+library(caret)
+set.seed(1234)
+inTrain <- createDataPartition(y=data$classe, p=0.7, list=FALSE)
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+```
+
+Our modelling strategy is as follows. We will train the model on the training set with some cross validation technique. We will then validate each model on our testing set and choose the best model based on the best validation accuracy.
+
+### Preprocessing
+
+We may do some preprocessing on the data before modelling, such as centering, scaling, BoxCox transformation, Principal Components Analysis and Missing values Imputation. However, since we will predict categorical variables and there are no missing values, most of these methods are not required. Let us see if PCA is warranted. How many of the variables are highly correlated?
+
+```{r}
+corrM <- cor(training[,-53])
+diag(corrM) <- 0
+nrow(which(corrM < -0.8 | corrM > 0.8, arr.ind = T))
+```
+Only 38 pairs out of 52*51/2 = 1326 pairs have high cross-correlations. This is negligible and hence we decide not to do PCA. Fig 1 in Appendix shows a plot of the correlations.
+
+
+### Simple Decision Tree (CART)
+
+First, let us try out Simple (CART) Decision Tree without pruning and using training with 10-folds cross-validation. We will use caret's train() function, which by default uses 75% of the data to create training sub-samples, and uses the Accuracy metric to report.
+
+```{r echo=FALSE}
+fitrpart <- readRDS("fitrpart.rds")
+# saveRDS(fitrpart, "fitrpart.rds")
+```
+```
+fitrpart <- train(classe ~ ., method="rpart", trControl=trainControl("cv"), data=training)
+```
+```{r}
+cmrpart <- confusionMatrix(predict(fitrpart, newdata=testing), testing$classe)
+cmrpart$overall
+```
+
+This reports a 48.9% Accuracy and hence we need to look for some other model.
+
+### Conditional Inference Tree with Bagging
+
+We learnt the Bagging technique in this course as a method to combine several weak predictors to yield a strong predictor. We can use the CART tree as a weak predictor, but let us use a different variant, the Conditional Inference Tree, that uses a statistical test and p-value instead of CART's impurity measures (Misclassification / Gini index). We use caret's ctree and Bagging over 10 bootstrap samples.
+
+```{r echo=FALSE}
+fitctbag <- readRDS("fitctbag.rds")
+# saveRDS(fitctbag, "fitctbag.rds")
+```
+```
+fitctbag <- bag(x=training[,-53], y=training[,53], B=10, 
+                bagControl = bagControl(fit=ctreeBag$fit,
+                                        predict=ctreeBag$pred,
+                                        aggregate = ctreeBag$aggregate))
+```
+```{r}
+cmctbag <- confusionMatrix(predict(fitctbag, newdata=testing), testing$classe)
+cmctbag$overall
+```
+
+The accuracy is great at 96.04%! Let us give a final try with Random Forests.
+
+
+### Random Forest
+
+Finally we try the Random Forest model. For cross validation, let us use bootstrapping with 25 resamples, which is the default training method for caret.
+
+```{r echo=FALSE}
+fitrf <- readRDS("fitrf.rds")
+# saveRDS(fitrf, "fitrf.rds")
+```
+```
+fitrf <- train(classe ~ ., method="rf", data=training)
+```
+```{r}
+cmrf <- confusionMatrix(predict(fitrf, newdata=testing), testing$classe)
+cmrf$overall
+```
+
+Since this produces a 99.52% accuracy, the highest of all models, on the test set, we choose this model. Fig. 2 in Appendix plots the most important of the variables in this model.
+
+```{r, echo=FALSE}
+fitrf$finalModel
+```
+
+This also shows that the cross validation accuracy is 99.34% (error rate on out of bag samples = 0.66%). With OOB accuracy of 99.34% and validation accuracy (i.e. on our test set) of 99.52%, we expect to have a good prediction on the final test set of 20 (pm-ltesting.csv).
+
+
+
+## Conclusion
+
+Using the Random Forest model with bootstraping gave us a 0.66% OOB cross validation error and a 99.52% accuracy on our testing set. When we predicted the results of the final test set (pml-testing.csv) using this model, we got all 20 correct predictions! Random Forest proved to be a very powerful technique for our problem. The only downside being the half an hour processing time it took on my i5 processor with 6GB RAM.
+
+
+# Appendix
+
+
+**Correlation plot of training data parameters:**
+
+Note: R Studio runs out of memory while running this command; hence could not incorporate. However, the following code runs fine on the console.
+
+```
+library(corrplot)
+corrplot(corrM, order = "FPC", method = "circle", type = "lower", tl.cex = 0.8,  tl.col = rgb(0, 0, 0)) # Order = Principal Components First
+```
+
+**Dotchart of variable importance as measured by our Random Forest model:**
+
+```{r echo=FALSE, fig.cap="Fig. 2: Dotchart of variable importance as measured by our Random Forest model"}
+plot(varImp(fitrf))
+```
